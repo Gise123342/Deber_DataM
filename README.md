@@ -4,7 +4,9 @@ Giselle Cevallos 00325549
 
 
 **Descripción y diagrama de arquitectura.** 
+
 Este proyecto implementa un pipeline de backfill histórico que extrae información de QuickBooks Online (QBO) para las entidades Invoices, Customers e Items, y la deposita en Postgres dentro de un esquema raw.
+
 •	Orquestación: Mage
 •	Depliage: Docker Compose
 •	Seguridad: Mage Secrets para gestionar credenciales/tokens
@@ -35,9 +37,20 @@ Rotación: 30 días
 **Detalle de los tres pipelines qb__backfill: parámetros, segmentación, límites, reintentos**
 
 Parametros y Segmentación:
+
+Trigger:
 -	fecha_inicio: marca de inicio del backfill histórico
 -	fecha_fin: marca de fin del backfill histórico 
 -	chunk_days (opcional): cantidad de días por segmento
+
+Estructura:
+qb_customers_backfill: loader + exporter de customers.
+qb_invoices_backfill: loader + exporter de invoices.
+qb_items_backfill:  loader + exporter de items.
+
+Segmentación
+Chunking: división del rango temporal en intervalos más pequeños para evitar timeouts.
+Paginación: recorrido página por página hasta agotar datos.
 
 límites, reintentos:
 -	Manejo de errores implementado con máx. 5 reintentos.
@@ -82,7 +95,17 @@ Cómo correr:
 - Revisar logs _processing_log generados en loader.
 - Validar DataFrame en transform (print shape)
 - Revisar resultados en export (rows, columns)
-- 
+
+  Loader (ejem):
+  Interpretación: datos procesados correctamente por chunk y página.
+  Página 1: 50 filas en 0.42s
+  Chunk 12: 2025-09-01 → 2025-09-07
+
+  Exporter (ejem):
+  Batch INVOICES: 10 (inserted=9, updated=1, skipped=0)
+  Carga INVOICES: 23 filas en 0.12s
+  
+
 Cómo interpretar:
 
 - filas_procesadas = 0 (no hubo cambios en ese rango)
@@ -91,23 +114,48 @@ Cómo interpretar:
 
 **Troubleshooting: auth, paginación, límites, timezones, almacenamiento y permisos.**
 
-Auth:
-Error 401: renovar refresh_token.
+Autenticación:
+- Asegúrate de que todos los secretos estén correctamente configurados en el gestor de secretos en mage(client_id, client_secret, refresh_token, realm_id).
+- En el caso de tener errores relacionados con access_token, genera uno nuevo usando el refresh_token.
+- Verifica que el realm_id corresponda al entorno de QuickBooks configurado (producción o sandbox).
 
 Paginación:
-QuickBooks no usa paginación tradicional: se maneja por chunks de fechas.
 
-Límites:
-Error 429 → esperar y reintentar (ya manejado en código).
+El conector utiliza start_position y maxresults para recorrer la API de QuickBooks.
+
+Siempre comienza desde start_position=1 para evitar pérdida de datos.
+
+Revisa que maxresults no exceda el límite permitido por QuickBooks (normalmente 1000).
+
+Si faltan registros, valida que todos los chunks fueron procesados y almacenados en raw.
+
+Límites de API:
+QuickBooks Online impone límites de peticiones por minuto y por día.
+- Se utilizo Backoff exponencial con jitter para manejar saturaciones.
+- Uso de headers de respuesta (Retry-After) cuando están disponibles.
+
+Políticas configuradas:
+
+Si se recibe error 429, se reintenta hasta 6 veces con backoff progresivo.
+Reducir granularidad (days_per_chunk) en backfill si se presentan múltiples errores de límite.
 
 Timezones:
-
-QuickBooks usa UTC; convertir a local (Guayaquil = UTC-5) solo en reportes.
+- Todos los pipelines transforman timestamps a UTC para consistencia.
+- Los registros de QuickBooks incluyen información de zona horaria; valida que la conversión no genere duplicados.
+- Para análisis local, aplica conversión UTC 
 
 Almacenamiento:
+Los datos se guardan en el esquema raw de Postgres bajo la convención raw.qb_<entidad>.
 
-Verificar espacio en Postgres si el payload crece.
+Estrategias aplicadas:
 
-Permisos:
+Upsert (insert/update) para mantener datos consistentes.
 
-Revisar roles en warehouse (root@warehouse).
+Deduplicación al momento de inserción si QuickBooks devuelve registros repetidos.
+
+Si el payload cambia (nuevo campo o cambio de tipo), se actualiza el registro existente sin perder histórico.
+
+Permisos
+
+- El token OAuth2 debe tener acceso a las entidades habilitadas en QuickBooks (ej. Customer, Invoice, Payment, Item).
+- El usuario de la base de datos debe tener permisos de: escritura en raw.qb_<entidad>, lectura en transform y analytics para posteriores etapas, si falla la escritura en DB, revisar permisos de rol asignado en Postgres.
