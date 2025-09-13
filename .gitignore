@@ -1,5 +1,21 @@
-*.log 
-pg_stat_tmp/ 
-scheduler_data/mage_data/scheduler/pipelines/*/.logs/ 
-.logs/ 
+# Logs y temporales
+*.log
 *.tmp
+.logs/
+
+# Datos temporales de Postgres (carpeta donde guarda los binarios)
+semana1/
+
+# Datos de pgAdmin
+warehouse_ui_data/
+
+# Datos de Mage (scheduler)
+scheduler_data/mage_data/scheduler/pipelines/*/.logs/
+scheduler_data/
+
+# Archivos temporales de Postgres
+pg_stat_tmp/
+
+# Opcional: ignorar todos los dumps grandes, excepto el que quieras compartir
+*.sql
+!init.sql   # este sí lo subes si lo quieres versionar
