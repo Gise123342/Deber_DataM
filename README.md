@@ -8,28 +8,44 @@ Giselle Cevallos 00325549
 Este proyecto implementa un pipeline de backfill histórico que extrae información de QuickBooks Online (QBO) para las entidades Invoices, Customers e Items, y la deposita en Postgres dentro de un esquema raw.
 
 •	Orquestación: Mage
+
 •	Depliage: Docker Compose
+
 •	Seguridad: Mage Secrets para gestionar credenciales/tokens
+
 •	Alcance: solo backfill histórico (no incluye pipelines diarios, transformaciones a clean ni modelado dimensional).
 
 **Pasos para levantar contenedores y configurar el proyecto.**
 
 **Gestión de secretos (nombres, propósito, rotación, responsables; sin valores).**
 
+
+
+
 QB_CLIENT_ID:
+
 Proposito: Identificador de la aplicación registrada en QBO
+
 Rotación: 90 dias
 
+
+
 QB_CLIENT_SECRET
+
 Proposito: Credencial privada asociada al Client ID
+
 Rotación: 90 dias
 
 QB_REALM_ID
+
 Proposito: Identificador único de la compañía en QBO
+
 Rotación: Cambio por ambiente
 
 QB_REFRESH_TOKEN
+
 Proposito: Token de larga duración para renovar accesos temporales
+
 Rotación: 30 días
 
 
@@ -44,12 +60,17 @@ Trigger:
 -	chunk_days (opcional): cantidad de días por segmento
 
 Estructura:
+
 qb_customers_backfill: loader + exporter de customers.
+
 qb_invoices_backfill: loader + exporter de invoices.
+
 qb_items_backfill:  loader + exporter de items.
 
-Segmentación
-Chunking: división del rango temporal en intervalos más pequeños para evitar timeouts.
+Segmentación:
+
+Chunking:división del rango temporal en intervalos más pequeños para evitar timeouts.
+
 Paginación: recorrido página por página hasta agotar datos.
 
 límites, reintentos:
@@ -63,6 +84,7 @@ límites, reintentos:
 El formato que se uso de fecha y hora. Dependiendo de la tuberia se implemento una diferente fehca y una diferente hora que cumpla con los datos obtenidos de la API. Esta fecha-hora debia estar dentro de el rango de valores de los datos ya que si no obtenia ningun datos, no podia seguir con la siguiente fase de el proceso que es la transformacion
 
 Fecha/hora en UTC: 2025-09-12 15:00:00 
+
 Equivalencia Guayaquil: 2025-09-12 10:00:00
 
 Política: una vez ejecutado y validado, deshabilitar trigger para evitar relanzamientos accidentales.
@@ -72,6 +94,7 @@ Política: una vez ejecutado y validado, deshabilitar trigger para evitar relanz
 **Esquema raw: tablas por entidad, claves, metadatos obligatorios, idempotencia.**
 
 Se utilizo un formato especifico para las tablas raw
+
 Este paso se realizo en la transformacion de los datos 
 
 raw_qb_invoices (gual diseño para raw_qb_customers y raw_qb_items)
@@ -96,13 +119,19 @@ Cómo correr:
 - Validar DataFrame en transform (print shape)
 - Revisar resultados en export (rows, columns)
 
-  Loader (ejem):
+  **Loader (ejem):**
+  
   Interpretación: datos procesados correctamente por chunk y página.
+  
   Página 1: 50 filas en 0.42s
+  
   Chunk 12: 2025-09-01 → 2025-09-07
+  
 
-  Exporter (ejem):
+  **Exporter (ejem):**
+ 
   Batch INVOICES: 10 (inserted=9, updated=1, skipped=0)
+  
   Carga INVOICES: 23 filas en 0.12s
   
 
@@ -119,43 +148,17 @@ Autenticación:
 - En el caso de tener errores relacionados con access_token, genera uno nuevo usando el refresh_token.
 - Verifica que el realm_id corresponda al entorno de QuickBooks configurado (producción o sandbox).
 
-Paginación:
-
-El conector utiliza start_position y maxresults para recorrer la API de QuickBooks.
-
-Siempre comienza desde start_position=1 para evitar pérdida de datos.
-
-Revisa que maxresults no exceda el límite permitido por QuickBooks (normalmente 1000).
-
-Si faltan registros, valida que todos los chunks fueron procesados y almacenados en raw.
-
 Límites de API:
-QuickBooks Online impone límites de peticiones por minuto y por día.
-- Se utilizo Backoff exponencial con jitter para manejar saturaciones.
-- Uso de headers de respuesta (Retry-After) cuando están disponibles.
+- QuickBooks Online impone límites de peticiones por minuto y por día.
 
-Políticas configuradas:
-
-Si se recibe error 429, se reintenta hasta 6 veces con backoff progresivo.
-Reducir granularidad (days_per_chunk) en backfill si se presentan múltiples errores de límite.
+Se utilizó Backoff exponencial para manejar saturaciones.
+- Si se recibe error 429, se reintenta hasta 5 veces con backoff progresivo.
 
 Timezones:
 - Todos los pipelines transforman timestamps a UTC para consistencia.
-- Los registros de QuickBooks incluyen información de zona horaria; valida que la conversión no genere duplicados.
-- Para análisis local, aplica conversión UTC 
 
-Almacenamiento:
-Los datos se guardan en el esquema raw de Postgres bajo la convención raw.qb_<entidad>.
-
-Estrategias aplicadas:
-
-Upsert (insert/update) para mantener datos consistentes.
-
-Deduplicación al momento de inserción si QuickBooks devuelve registros repetidos.
-
-Si el payload cambia (nuevo campo o cambio de tipo), se actualiza el registro existente sin perder histórico.
-
-Permisos
-
-- El token OAuth2 debe tener acceso a las entidades habilitadas en QuickBooks (ej. Customer, Invoice, Payment, Item).
-- El usuario de la base de datos debe tener permisos de: escritura en raw.qb_<entidad>, lectura en transform y analytics para posteriores etapas, si falla la escritura en DB, revisar permisos de rol asignado en Postgres.
+Troubleshooting básico:
+- Manejo de errores implementado con máx. 5 reintentos.
+- Backoff exponencial (2^i segundos) entre cada intento.
+- Errores manejados: 429 (rate limit), 500, 502, 503, 504.
+- En caso de error no bloqueante, se loguea y se continúa con el siguiente chunk.
