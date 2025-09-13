@@ -1,0 +1,5 @@
+*.log 
+pg_stat_tmp/ 
+scheduler_data/mage_data/scheduler/pipelines/*/.logs/ 
+.logs/ 
+*.tmp
